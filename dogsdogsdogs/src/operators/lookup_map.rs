@@ -7,7 +7,7 @@ use timely::dataflow::operators::Operator;
 use timely::progress::Antichain;
 
 use differential_dataflow::{ExchangeData, Collection, AsCollection, Hashable};
-use differential_dataflow::difference::{Semigroup, Monoid};
+use differential_dataflow::difference::{Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;
 use differential_dataflow::trace::{Cursor, TraceReader, BatchReader};
@@ -34,12 +34,12 @@ where
     Tr::Val: Clone,
     Tr::Batch: BatchReader<Tr::Key, Tr::Val, Tr::Time, Tr::R>,
     Tr::Cursor: Cursor<Tr::Key, Tr::Val, Tr::Time, Tr::R>,
-    Tr::R: Monoid+ExchangeData,
+    Tr::R: Semigroup+ExchangeData,
     F: FnMut(&D, &mut Tr::Key)+Clone+'static,
     D: ExchangeData,
-    R: ExchangeData+Monoid,
+    R: ExchangeData+Semigroup,
     DOut: Clone+'static,
-    ROut: Monoid,
+    ROut: Semigroup,
     S: FnMut(&D, &R, &Tr::Val, &Tr::R)->(DOut, ROut)+'static,
 {
     // No need to block physical merging for this operator.
@@ -95,17 +95,24 @@ where
 
                     let (mut cursor, storage) = trace.cursor();
 
-                    for &mut (ref prefix, ref time, ref mut diff) in prefixes.iter_mut() {
+                    prefixes.drain_filter(|&mut (ref prefix, ref time, ref mut diff)| {
                         if !input2.frontier.less_equal(time) {
                             logic2(prefix, &mut key1);
                             cursor.seek_key(&storage, &key1);
                             if cursor.get_key(&storage) == Some(&key1) {
                                 while let Some(value) = cursor.get_val(&storage) {
-                                    let mut count = Tr::R::zero();
+                                    let mut count = None;
                                     cursor.map_times(&storage, |t, d| {
-                                        if t.less_equal(time) { count.plus_equals(d); }
+                                        if t.less_equal(time) {
+                                            if count.is_none() {
+                                                count = Some(d.clone());
+                                            }
+					    else {
+                                                count.as_mut().unwrap().plus_equals(d);
+                                            }
+                                        }
                                     });
-                                    if !count.is_zero() {
+                                    if let Some(count) = count {
                                         let (dout, rout) = output_func(prefix, diff, value, &count);
                                         if !rout.is_zero() {
                                             session.give((dout, time.clone(), rout));
@@ -115,11 +122,10 @@ where
                                 }
                                 cursor.rewind_vals(&storage);
                             }
-                            *diff = R::zero();
+                            return true;
                         }
-                    }
-
-                    prefixes.retain(|ptd| !ptd.2.is_zero());
+                        false
+                    });
                 }
             }
 

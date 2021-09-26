@@ -39,7 +39,7 @@ use timely::dataflow::operators::Operator;
 use timely::progress::Antichain;
 
 use differential_dataflow::{ExchangeData, Collection, AsCollection, Hashable};
-use differential_dataflow::difference::{Monoid, Semigroup};
+use differential_dataflow::difference::{Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;
 use differential_dataflow::trace::{Cursor, TraceReader, BatchReader};
@@ -83,7 +83,7 @@ where
     Tr::Val: Clone,
     Tr::Batch: BatchReader<Tr::Key, Tr::Val, Tr::Time, Tr::R>,
     Tr::Cursor: Cursor<Tr::Key, Tr::Val, Tr::Time, Tr::R>,
-    Tr::R: Monoid+ExchangeData,
+    Tr::R: Semigroup+ExchangeData,
     FF: Fn(&G::Timestamp) -> G::Timestamp + 'static,
     CF: Fn(&G::Timestamp, &G::Timestamp) -> bool + 'static,
     DOut: Clone+'static,
@@ -133,11 +133,11 @@ where
     Tr::Val: Clone,
     Tr::Batch: BatchReader<Tr::Key, Tr::Val, Tr::Time, Tr::R>,
     Tr::Cursor: Cursor<Tr::Key, Tr::Val, Tr::Time, Tr::R>,
-    Tr::R: Monoid+ExchangeData,
+    Tr::R: Semigroup+ExchangeData,
     FF: Fn(&G::Timestamp) -> G::Timestamp + 'static,
     CF: Fn(&G::Timestamp, &G::Timestamp) -> bool + 'static,
     DOut: Clone+'static,
-    ROut: Monoid,
+    ROut: Semigroup,
     I: IntoIterator<Item=(DOut, G::Timestamp, ROut)>,
     S: FnMut(&Tr::Key, &V, &Tr::Val, &G::Timestamp, &G::Timestamp, &Tr::R, &Tr::R)-> I + 'static,
 {
@@ -183,7 +183,7 @@ where
 
                     let (mut cursor, storage) = trace.cursor();
 
-                    for &mut ((ref key, ref val1, ref time), ref initial, ref mut diff1) in proposals.iter_mut() {
+                    proposals.drain_filter(|&mut ((ref key, ref val1, ref time), ref initial, ref mut diff1)| {
                         // Use TOTAL ORDER to allow the release of `time`.
                         if !input2.frontier.frontier().iter().any(|t| comparison(t, initial)) {
                             cursor.seek_key(&storage, &key);
@@ -204,11 +204,10 @@ where
                                 }
                                 cursor.rewind_vals(&storage);
                             }
-                            *diff1 = Tr::R::zero();
+                            return true;
                         }
-                    }
-
-                    proposals.retain(|ptd| !ptd.2.is_zero());
+                        false
+                    });
                 }
             }
         }
